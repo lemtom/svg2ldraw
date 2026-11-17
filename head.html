@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>svg2ldraw - Minifig head print</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      max-width: 60em;
+      margin: 1em auto;
+      padding: 0 1em;
+    }
+
+    .section {
+      margin: 1.2em 0;
+    }
+
+    label {
+      display: inline-block;
+      min-width: 14em;
+    }
+
+    input[type=text] {
+      width: 20em;
+    }
+
+    textarea {
+      width: 100%;
+      height: 12em;
+      font-family: monospace;
+    }
+
+    .error,
+    .warning {
+      display: block;
+      margin: 0.5em 0;
+      padding: 0.5em;
+      border: 0.2em solid orange;
+    }
+
+    .error {
+      border-color: red;
+    }
+
+    .choice {
+      display: block;
+      margin: 0.2em 0;
+    }
+
+    .color_cube {
+      display: inline-block;
+      width: 1em;
+      height: 1em;
+      margin: 0 0.5em;
+      border: 1px solid #000;
+      vertical-align: middle;
+    }
+
+    .preview {
+      width: 30em;
+      max-width: 100%;
+      display: block;
+      margin: 0.3em 0;
+      border: 1px solid #aaa;
+      background: #fff;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- Same modules as index.htm: -->
+  <script src="js/three.min.js"></script>
+  <script src="js/jquery.min.js"></script>
+  <script src="js/colors.js"></script>
+  <script src="js/geometry.js"></script>
+  <script src="js/holes.js"></script>
+  <script src="js/color_transformation.js"></script>
+  <script src="js/path_simplification.js"></script>
+  <script src="js/bezier_removal.js"></script>
+  <script src="js/arc_removal.js"></script>
+  <script src="js/convex_hull_decomposition.js"></script>
+  <script src="js/tjunctions.js"></script>
+  <script src="js/LDROptions.js"></script>
+  <script src="js/LDRShaders.js"></script>
+  <script src="js/LDRColorMaterials.js"></script>
+  <script src="js/LDRGeometries.js"></script>
+  <script src="js/LDRLoader.js"></script>
+  <script src="js/svg2ldraw.js"></script>
+  <script src="js/torso.js"></script>
+  <script src="js/head.js"></script>
+
+  <h1>Minifig head print</h1>
+
+  <div class="section">
+    <h3>1. Choose the type of print</h3>
+    <p><label for="mode">Type</label>
+      <select id="mode">
+        <option value="one">One-sided face (90&deg; on the front)</option>
+        <option value="two">Two-sided face (front and back, 135&deg; each)</option>
+        <option value="continuous">Continuous pattern (wraps around the full circle)</option>
+      </select>
+    </p>
+    <p><label for="band">Print covers</label>
+      <select id="band">
+        <option value="wall">The straight wall only (y 4 to 17)</option>
+        <option value="full">The wall and the rounded top and bottom (y 0 to 21)</option>
+      </select>
+    </p>
+  </div>
+
+  <div class="section">
+    <h3>2. Draw on the template</h3>
+    <p>Draw with filled shapes on the "Print" layer. Keep the SVG size and viewBox as they are.</p>
+    <a id="template_link" download="head_template.svg">Download template SVG</a>
+  </div>
+
+  <div class="section">
+    <h3>3. Convert</h3>
+    <p id="file_rows"></p>
+    <p><label for="partname">Part name</label><input type="text" id="partname" value="3626pXX.dat"></p>
+    <p><label for="desc">Description</label><input type="text" id="desc" value="Minifig Head with Custom Pattern"></p>
+    <details>
+      <summary>Advanced</summary>
+      <p><label for="ppp">Points per 100 pixels (curves)</label><input type="text" id="ppp" value="25"></p>
+      <p><label for="basehex">Preview colour of base (16)</label><input type="text" id="basehex" value="#e8c020"></p>
+      <p>Parts that are not printed (the rest of the head).</p>
+      <textarea id="baselines"></textarea>
+    </details>
+  </div>
+
+  <div class="section">
+    <h3>4. Result</h3>
+    <div id="errors"></div>
+    <div id="warnings"></div>
+    <div id="color_choices"></div>
+    <div id="previews"></div>
+    <p id="stats"></p>
+    <textarea id="result" readonly></textarea>
+    <p><button id="download">Download .dat</button></p>
+  </div>
+
+  <script>
+    var texts = {}, ct = new LDR.ColorTransformation(), seenWarnings = {}, colorRows = {};
+
+    function onWarning(type, message) {
+      console.warn(message);
+      if (seenWarnings[type]) return;
+      seenWarnings[type] = true;
+      var s = document.createElement('span'); s.className = 'warning'; s.textContent = message;
+      $('#warnings').append(s);
+    }
+    function onError(message) {
+      var s = document.createElement('span'); s.className = 'error'; s.textContent = message;
+      $('#errors').empty().append(s);
+    }
+    function onColorMapped(caller, htmlColor, color) { colorRows[htmlColor] = true; }
+
+    function buildColorChoices() {
+      var parent = $('#color_choices').empty()[0];
+      Object.keys(colorRows).forEach(function (htmlColor) {
+        var span = document.createElement('span'); span.className = 'choice'; parent.appendChild(span);
+        var label = document.createElement('label'); label.textContent = htmlColor; span.appendChild(label);
+        var cube = document.createElement('span'); cube.className = 'color_cube'; cube.style.backgroundColor = htmlColor; label.appendChild(cube);
+        var sel = document.createElement('select'); span.appendChild(sel);
+        var cur = ct.map[htmlColor];
+        ct.colors.forEach(function (c, i) {
+          var o = document.createElement('option'); o.value = i; o.textContent = c.text;
+          if (cur && c.id === cur.id) o.selected = true;
+          sel.appendChild(o);
+        });
+        sel.onchange = function () { ct.map[htmlColor] = ct.colors[sel.value]; run(false); };
+      });
+    }
+
+    function currentMode() { return $('#mode').val(); }
+
+    // Rebuilds the file inputs and the template link when the mode or band changes.
+    function setupMode(resetBase) {
+      var mode = currentMode(), m = HEAD.MODES[mode];
+      var band = $('#band').val();
+      if (resetBase) $('#baselines').val(HEAD.BASE_LINES[mode]);
+      var rows = $('#file_rows').empty();
+      m.faces.forEach(function (fd, idx) {
+        var label = document.createElement('label'); label.textContent = fd.name + ' SVG' + (m.faces.length > 1 ? ' (optional)' : '');
+        var input = document.createElement('input'); input.type = 'file'; input.accept = '.svg,image/svg+xml';
+        input.onchange = function (ev) {
+          var f = ev.target.files[0];
+          if (!f) { texts[mode + idx] = null; run(true); return; }
+          var reader = new FileReader();
+          reader.onload = function () { texts[mode + idx] = reader.result; ct = new LDR.ColorTransformation(); colorRows = {}; run(true); };
+          reader.readAsText(f);
+        };
+        rows.append(label); rows.append(input); rows.append(document.createElement('br'));
+      });
+      var old = document.getElementById('template_link').href;
+      document.getElementById('template_link').href =
+        URL.createObjectURL(new Blob([HEAD.templateSvg(mode, band)], { type: 'image/svg+xml' }));
+      document.getElementById('template_link').download = 'head_template_' + mode + '_' + band + '.svg';
+      if (old.startsWith('blob:')) URL.revokeObjectURL(old);
+      $('#previews').empty(); $('#result').val(''); $('#stats').text('');
+    }
+
+    function run(rebuildChoices) {
+      $('#errors').empty(); $('#warnings').empty(); seenWarnings = {};
+      var mode = currentMode(), m = HEAD.MODES[mode], band = $('#band').val();
+      var frame = HEAD.frame(mode, band);
+      var o = {
+        pointsPer100px: Number.parseFloat($('#ppp').val()) || 25, colorTransformation: ct,
+        onWarning: onWarning, onError: onError, onColorMapped: onColorMapped, baseId: 16, baseHex: $('#basehex').val() || '#e8c020'
+      };
+      var faces = [];
+      try {
+        m.faces.forEach(function (fd, idx) {
+          var text = texts[mode + idx] || null;
+          var face = text === null ? HEAD.emptyFace(frame, o) : HEAD.convert(text, frame, o);
+          faces.push(face);
+        });
+      } catch (e) { onError('Conversion failed: ' + e); return; }
+      if (faces.some(f => !f)) return;
+      if (rebuildChoices) buildColorChoices();
+
+      // Unwrapped previews: the flat frame with the polygons, and the facet borders.
+      var pv = $('#previews').empty();
+      faces.forEach(function (face, idx) {
+        var svg = '<svg class="preview" viewBox="-1 -1 ' + (face.W + 2) + ' ' + (face.H + 2) + '">';
+        face.hulls.forEach(h => svg += '<polygon points="' + h.pts.map(p => p.x + ',' + p.y).join(' ') + '" fill="' + h.hex + '" stroke="' + h.hex + '" stroke-width="0.03"/>');
+        for (var i = 0; i <= m.facets; i++) svg += '<path d="M' + (i * HEAD.FACET_W) + ' 0 V' + face.H + '" stroke="#e00000" stroke-width="0.08" opacity="0.5"/>';
+        svg += '</svg>';
+        pv.append('<div>' + m.faces[idx].name + ' (unwrapped)</div>' + svg);
+      });
+
+      var dat = HEAD.toLDraw({
+        mode: mode, band: band, faces: faces, name: $('#partname').val(), description: $('#desc').val(),
+        baseLines: $('#baselines').val()
+      });
+      $('#result').val(dat);
+      $('#stats').text(dat.split('\n').filter(l => /^[34] /.test(l)).length + ' polygons.');
+    }
+
+    $('#mode').on('change', function () { $('#band').val(HEAD.MODES[currentMode()].defaultBand); setupMode(true); });
+    $('#band').on('change', function () { setupMode(false); run(true); });
+    $('#ppp, #partname, #desc, #basehex, #baselines').on('change', () => run(false));
+    $('#download').on('click', function () {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([$('#result').val()], { type: 'text/plain' }));
+      a.download = $('#partname').val() || 'head.dat'; a.click();
+    });
+    $('#band').val(HEAD.MODES.one.defaultBand);
+    setupMode(true);
+  </script>
+</body>
+
+</html>

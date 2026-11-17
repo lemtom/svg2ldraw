@@ -22,6 +22,23 @@ UTIL.ConvexHullDecomposition.prototype.build = function() {
         //console.log('Handling: ' + path.toSvg());
         var pts = path.pts;
         var color = path.color;
+        var hullsBefore = hulls.length; // To roll back partial output if we have to fall back.
+
+        // Helper: emit convex pieces (arrays of points) as hulls, skipping slivers UTIL.CH refuses.
+        function emitTriangles(tris) {
+            tris.forEach(function(t) {
+                try {
+                    hulls.push(new UTIL.CH(t, color));
+                }
+                catch(e) { /* Degenerate sliver: carries no area worth printing. */ }
+            });
+        }
+
+        // Shapes with holes can't be handled by the greedy hull algorithm. Triangulate them.
+        if(path.holes && path.holes.length > 0) {
+            emitTriangles(UTIL.triangulateWithHoles(pts, path.holes, self.onWarning));
+            return;
+        }
 
         function rt(i0, i1, i2) {
             return !UTIL.leftTurn(pts[i0], pts[i1], pts[i2]);
@@ -40,14 +57,12 @@ UTIL.ConvexHullDecomposition.prototype.build = function() {
                 //console.warn('Inline points on hull - skipping');
                 return true;
             }
-            var triangle = new UTIL.CH([p0, p1, p2]);
-            for(var i = 0; i < pts.length; i++) {
-                var p = pts[i];
+            for(const element of pts) {
+                var p = element;
                 if(p.equals(p0) || p.equals(p1) || p.equals(p2)) {
                     continue; // Own points
                 }
-                if(triangle.isInside(p)) {
-                    //console.log(p.x + ', ' + p.y + ' is inside from position ' + i);
+                if(UTIL.strictlyInsideTriangle(p0, p1, p2, p)) {
                     return false;
                 }
             }
@@ -57,6 +72,9 @@ UTIL.ConvexHullDecomposition.prototype.build = function() {
         //console.dir(pts);
         while(pts.length > 0) {
             pts = UTIL.removeInlinePoints(pts);
+            if(pts.length < 3) {
+                break; // Nothing (but a line or point) left.
+            }
             //console.log('PREPARED POINTS'); console.dir(pts);
 
             var i0 = 0;//TODOMath.floor(Math.random()*pts.length);
@@ -80,10 +98,10 @@ UTIL.ConvexHullDecomposition.prototype.build = function() {
                     i0 = 0;
                 }
                 if(i0 === start) {
-                    console.dir(pts);
-                    pts.forEach(p => console.log(p.toSvg('#F00', 5)));
-                    self.onWarning('non-consuming', "No convex non-consuming tripplet on path: " + path.toSvg());
-                    return; // No output.
+                    // Instead of dropping the rest of the shape, ear clip it.
+                    self.onWarning('non-consuming', "No convex non-consuming tripplet on a path. Falling back to ear clipping.");
+                    emitTriangles(UTIL.earClip(pts, self.onWarning));
+                    return;
                 }
             }
 
@@ -123,22 +141,35 @@ UTIL.ConvexHullDecomposition.prototype.build = function() {
                 hull.push(...pts.slice(i0));
                 pts = pts.slice(i1, i0+1);
             }
-            //color = UTIL.COLORS[(UTIL.IDX++)%UTIL.COLORS.length];
-            //console.log('Hull generated:');
-            //console.dir(hull);
-            //console.log('Remaining:');
-            //console.dir(pts);
             try {
                 hulls.push(new UTIL.CH(hull, color));
             }
             catch(e) {
-                console.dir(e);
                 self.onWarning('CH construction', e);
             }
         }
     }
 
-    this.paths.forEach(handlePath);
+    // A failure in one path no longer kills the whole conversion: roll back and ear clip that path.
+    function safeHandlePath(path) {
+        var before = hulls.length;
+        try {
+            handlePath(path);
+        }
+        catch(e) {
+            hulls.length = before;
+            self.onWarning('chd_failed', 'Convex hull decomposition failed (' + e + '). Falling back to ear clipping.');
+            try {
+                var tris = UTIL.earClip(path.pts, self.onWarning);
+                tris.forEach(function(t) { try { hulls.push(new UTIL.CH(t, path.color)); } catch(error_) {} });
+            }
+            catch(error_) {
+                self.onWarning('chd_failed', 'Ear clipping failed too (' + error_ + '). Path ignored.');
+            }
+        }
+    }
+
+    this.paths.forEach(safeHandlePath);
 
     this.paths = hulls;
 }

@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>svg2ldraw - Printed tile</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      max-width: 60em;
+      margin: 1em auto;
+      padding: 0 1em;
+    }
+
+    .section {
+      margin: 1.2em 0;
+    }
+
+    label {
+      display: inline-block;
+      min-width: 14em;
+    }
+
+    input[type=text] {
+      width: 20em;
+    }
+
+    textarea {
+      width: 100%;
+      height: 14em;
+      font-family: monospace;
+    }
+
+    .error,
+    .warning {
+      display: block;
+      margin: 0.5em 0;
+      padding: 0.5em;
+      border: 0.2em solid orange;
+    }
+
+    .error {
+      border-color: red;
+    }
+
+    .choice {
+      display: block;
+      margin: 0.2em 0;
+    }
+
+    .color_cube {
+      display: inline-block;
+      width: 1em;
+      height: 1em;
+      margin: 0 0.5em;
+      border: 1px solid #000;
+      vertical-align: middle;
+    }
+
+    #preview {
+      width: 30em;
+      max-width: 100%;
+      border: 1px solid #aaa;
+      background: #fff;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- Same modules as index.htm: -->
+  <script src="js/three.min.js"></script>
+  <script src="js/jquery.min.js"></script>
+  <script src="js/colors.js"></script>
+  <script src="js/geometry.js"></script>
+  <script src="js/holes.js"></script>
+  <script src="js/color_transformation.js"></script>
+  <script src="js/path_simplification.js"></script>
+  <script src="js/bezier_removal.js"></script>
+  <script src="js/arc_removal.js"></script>
+  <script src="js/convex_hull_decomposition.js"></script>
+  <script src="js/tjunctions.js"></script>
+  <script src="js/LDROptions.js"></script>
+  <script src="js/LDRShaders.js"></script>
+  <script src="js/LDRColorMaterials.js"></script>
+  <script src="js/LDRGeometries.js"></script>
+  <script src="js/LDRLoader.js"></script>
+  <script src="js/svg2ldraw.js"></script>
+  <script src="js/torso.js"></script>
+  <script src="js/tile.js"></script>
+
+  <h1>Printed tile</h1>
+
+  <div class="section">
+    <h3>1. Pick the tile and draw on the template</h3>
+    <p><label for="size">Tile</label>
+      <select id="size">
+        <option value="1x1">1 x 1 (3070b)</option>
+        <option value="1x2">1 x 2 (3069b)</option>
+        <option value="2x2">2 x 2 (3068b)</option>
+        <option value="custom">Custom size...</option>
+      </select>
+    </p>
+    <p id="custom_row" style="display:none"><label>Size in studs (X by Z)</label>
+      <input type="text" id="cw" value="1" style="width:3em"> x <input type="text" id="cd" value="4" style="width:3em">
+    </p>
+    <p>Draw your print with filled shapes on the "Print" layer. Keep the SVG size and viewBox as they are.</p>
+    <a id="template_link" download="tile_template.svg">Download template SVG</a>
+  </div>
+
+  <div class="section">
+    <h3>2. Convert</h3>
+    <p><label for="svg_top">Print SVG</label><input type="file" id="svg_top" accept=".svg,image/svg+xml"></p>
+    <p>Without a file, the top is plain base colour.</p>
+    <p><label for="partname">Part name</label><input type="text" id="partname" value="3070bpXX.dat"></p>
+    <p><label for="desc">Description</label><input type="text" id="desc" value="Tile 1 x 1 with Custom Pattern"></p>
+    <details>
+      <summary>Advanced</summary>
+      <p><label for="ppp">Points per 100 pixels (curves)</label><input type="text" id="ppp" value="3"></p>
+      <p><label for="basehex">Preview colour of base (16)</label><input type="text" id="basehex" value="#d0d0d0"></p>
+      <p>Fixed lines copied into the part (the body subpart). For a custom size, enter the body subpart here:</p>
+      <textarea id="baselines"></textarea>
+    </details>
+  </div>
+
+  <div class="section">
+    <h3>3. Result</h3>
+    <div id="errors"></div>
+    <div id="warnings"></div>
+    <div id="color_choices"></div>
+    <svg id="preview"></svg>
+    <p id="stats"></p>
+    <textarea id="result" readonly></textarea>
+    <p><button id="download">Download .dat</button></p>
+  </div>
+
+  <script>
+    var topText = null, ct = new LDR.ColorTransformation(), seenWarnings = {};
+
+    function onWarning(type, message) {
+      console.warn(message);
+      if (seenWarnings[type]) return;
+      seenWarnings[type] = true;
+      var s = document.createElement('span'); s.className = 'warning'; s.textContent = message;
+      $('#warnings').append(s);
+    }
+    function onError(message) {
+      var s = document.createElement('span'); s.className = 'error'; s.textContent = message;
+      $('#errors').empty().append(s);
+    }
+
+    var colorRows = {};
+    function onColorMapped(caller, htmlColor, color) { colorRows[htmlColor] = true; }
+    function buildColorChoices() {
+      var parent = $('#color_choices').empty()[0];
+      Object.keys(colorRows).forEach(function (htmlColor) {
+        var span = document.createElement('span'); span.className = 'choice'; parent.appendChild(span);
+        var label = document.createElement('label'); label.textContent = htmlColor; span.appendChild(label);
+        var cube = document.createElement('span'); cube.className = 'color_cube'; cube.style.backgroundColor = htmlColor; label.appendChild(cube);
+        var sel = document.createElement('select'); span.appendChild(sel);
+        var cur = ct.map[htmlColor];
+        ct.colors.forEach(function (c, i) {
+          var o = document.createElement('option'); o.value = i; o.textContent = c.text;
+          if (cur && c.id === cur.id) o.selected = true;
+          sel.appendChild(o);
+        });
+        sel.onchange = function () { ct.map[htmlColor] = ct.colors[sel.value]; run(false); };
+      });
+    }
+
+    function config() {
+      var p = TILE.PRESETS[$('#size').val()];
+      if ($('#size').val() === 'custom') {
+        return { w: Math.max(1, Number.parseInt($('#cw').val()) || 1), d: Math.max(1, Number.parseInt($('#cd').val()) || 1), print: null, preset: p };
+      }
+      return { w: p.w, d: p.d, print: p.print || null, preset: p };
+    }
+
+    // Selecting a size resets the name, description, fixed lines and the template link.
+    function applySize() {
+      var c = config(), p = c.preset;
+      $('#custom_row').toggle($('#size').val() === 'custom');
+      $('#partname').val(p.name); $('#desc').val(p.desc); $('#baselines').val(p.baseLines);
+      updateTemplateLink();
+    }
+    function updateTemplateLink() {
+      var c = config();
+      document.getElementById('template_link').href =
+        URL.createObjectURL(new Blob([TILE.templateSvg(c.w, c.d, c.print)], { type: 'image/svg+xml' }));
+    }
+
+    // Draws the fixed triangles/quads of the base lines (rim) in the preview, seen from above (template orientation).
+    function baseShapes(text) {
+      var shapes = [];
+      text.split('\n').forEach(function (l) {
+        var t = l.trim().split(/\s+/);
+        if ((t[0] !== '3' && t[0] !== '4') || t.length !== 2 + 3 * Number.parseInt(t[0])) return;
+        var pts = [];
+        for (var i = 0; i < Number.parseInt(t[0]); i++) pts.push((Number.parseFloat(t[2 + 3 * i])) + ',' + (-Number.parseFloat(t[4 + 3 * i])));
+        shapes.push(pts.join(' '));
+      });
+      return shapes;
+    }
+
+    function run(rebuildChoices) {
+      $('#errors').empty(); $('#warnings').empty(); seenWarnings = {};
+      var c = config(), g = TILE.geometry(c.w, c.d, c.print);
+      var o = {
+        w: c.w, d: c.d, print: c.print, pointsPer100px: Number.parseFloat($('#ppp').val()) || 3, colorTransformation: ct,
+        onWarning: onWarning, onError: onError, onColorMapped: onColorMapped, baseId: 16, baseHex: $('#basehex').val() || '#d0d0d0'
+      };
+      var face;
+      try {
+        face = topText === null ? TILE.emptyFace(o) : TILE.convert(topText, o);
+      } catch (e) { onError('Conversion failed: ' + e); return; }
+      if (!face) return;
+      if (rebuildChoices) buildColorChoices();
+
+      var pad = 1;
+      var pv = '';
+      baseShapes($('#baselines').val()).forEach(s => pv += '<polygon points="' + s + '" fill="' + o.baseHex + '" stroke="' + o.baseHex + '" stroke-width="0.03"/>');
+      face.hulls.forEach(h => pv += '<polygon points="' + h.pts.map(p => p.x + ',' + p.y).join(' ') + '" fill="' + h.hex + '" stroke="' + h.hex + '" stroke-width="0.03"/>');
+      pv += '<rect x="' + (-g.hx) + '" y="' + (-g.hz) + '" width="' + (2 * g.hx) + '" height="' + (2 * g.hz) + '" fill="none" stroke="#e00000" stroke-width="0.15"/>';
+      $('#preview').attr('viewBox', (-g.hx - pad) + ' ' + (-g.hz - pad) + ' ' + (2 * g.hx + 2 * pad) + ' ' + (2 * g.hz + 2 * pad)).html(pv);
+      $('#result').val(TILE.toLDraw(face.hulls, $('#partname').val(), $('#desc').val(), $('#baselines').val()));
+      $('#stats').text(face.hulls.length + ' polygons.');
+    }
+
+    $('#size').on('change', function () { applySize(); run(false); });
+    $('#cw, #cd').on('change', function () { updateTemplateLink(); run(false); });
+    $('#svg_top').on('change', function (ev) {
+      var f = ev.target.files[0];
+      if (!f) { topText = null; run(true); return; }
+      var reader = new FileReader();
+      reader.onload = function () { topText = reader.result; ct = new LDR.ColorTransformation(); colorRows = {}; run(true); };
+      reader.readAsText(f);
+    });
+    $('#ppp, #partname, #desc, #baselines, #basehex').on('change', () => run(false));
+    $('#download').on('click', function () {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([$('#result').val()], { type: 'text/plain' }));
+      a.download = $('#partname').val() || 'tile.dat'; a.click();
+    });
+    applySize(); run(true);
+  </script>
+</body>
+
+</html>

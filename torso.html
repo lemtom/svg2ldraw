@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>svg2ldraw - Minifig torso front plate</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      max-width: 60em;
+      margin: 1em auto;
+      padding: 0 1em;
+    }
+
+    .section {
+      margin: 1.2em 0;
+    }
+
+    label {
+      display: inline-block;
+      min-width: 14em;
+    }
+
+    input[type=text] {
+      width: 20em;
+    }
+
+    textarea {
+      width: 100%;
+      height: 14em;
+      font-family: monospace;
+    }
+
+    .error,
+    .warning {
+      display: block;
+      margin: 0.5em 0;
+      padding: 0.5em;
+      border: 0.2em solid orange;
+    }
+
+    .error {
+      border-color: red;
+    }
+
+    .choice {
+      display: block;
+      margin: 0.2em 0;
+    }
+
+    .color_cube {
+      display: inline-block;
+      width: 1em;
+      height: 1em;
+      margin: 0 0.5em;
+      border: 1px solid #000;
+      vertical-align: middle;
+    }
+
+    #preview,
+    #preview_back {
+      width: 24em;
+      max-width: 100%;
+      border: 1px solid #aaa;
+      background: #fff;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- Same modules as index.htm: -->
+  <script src="js/three.min.js"></script>
+  <script src="js/jquery.min.js"></script>
+  <script src="js/colors.js"></script>
+  <script src="js/geometry.js"></script>
+  <script src="js/holes.js"></script>
+  <script src="js/color_transformation.js"></script>
+  <script src="js/path_simplification.js"></script>
+  <script src="js/bezier_removal.js"></script>
+  <script src="js/arc_removal.js"></script>
+  <script src="js/convex_hull_decomposition.js"></script>
+  <script src="js/tjunctions.js"></script>
+  <script src="js/LDROptions.js"></script>
+  <script src="js/LDRShaders.js"></script>
+  <script src="js/LDRColorMaterials.js"></script>
+  <script src="js/LDRGeometries.js"></script>
+  <script src="js/LDRLoader.js"></script>
+  <script src="js/svg2ldraw.js"></script>
+  <script src="js/torso.js"></script>
+
+  <h1>Minifig torso front plate</h1>
+
+  <div class="section">
+    <h3>1. Draw on the template</h3>
+    <p>Draw your print with filled shapes on the "Print" layer. Keep the SVG size and viewBox as they are.</p>
+    <a id="template_link" download="torso_front_template.svg">Download template SVG</a>
+  </div>
+
+  <div class="section">
+    <h3>2. Convert</h3>
+    <p><label for="svg_front">Front SVG</label><input type="file" id="svg_front" accept=".svg,image/svg+xml"></p>
+    <p><label for="svg_back">Back SVG (optional)</label><input type="file" id="svg_back" accept=".svg,image/svg+xml">
+    </p>
+    <p>The back is drawn on the same template, as seen from behind. Without a file, the face is plain base colour.</p>
+    <p><label for="partname">Part name</label><input type="text" id="partname" value="973pXX.dat"></p>
+    <p><label for="desc">Description</label><input type="text" id="desc" value="Minifig Torso with Custom Pattern"></p>
+    <details>
+      <summary>Advanced</summary>
+      <p><label for="ppp">Points per 100 pixels (curves)</label><input type="text" id="ppp" value="3"></p>
+      <p><label for="subpart">Torso body subpart</label><input type="text" id="subpart" value="s\973s01.dat"></p>
+      <p><label for="basehex">Preview colour of base (16)</label><input type="text" id="basehex" value="#d0d0d0"></p>
+    </details>
+  </div>
+
+  <div class="section">
+    <h3>3. Result</h3>
+    <div id="errors"></div>
+    <div id="warnings"></div>
+    <div id="color_choices"></div>
+    <svg id="preview" viewBox="-20 -1 40 34"></svg>
+    <svg id="preview_back" viewBox="-20 -1 40 34"></svg>
+    <p id="stats"></p>
+    <textarea id="result" readonly></textarea>
+    <p><button id="download">Download .dat</button></p>
+  </div>
+
+  <script>
+    var frontText = null, backText = null, ct = new LDR.ColorTransformation(), seenWarnings = {};
+
+    document.getElementById('template_link').href =
+      URL.createObjectURL(new Blob([TORSO.templateSvg()], { type: 'image/svg+xml' }));
+
+    function onWarning(type, message) {
+      console.warn(message);
+      if (seenWarnings[type]) return;
+      seenWarnings[type] = true;
+      var s = document.createElement('span'); s.className = 'warning'; s.textContent = message;
+      $('#warnings').append(s);
+    }
+    function onError(message) {
+      var s = document.createElement('span'); s.className = 'error'; s.textContent = message;
+      $('#errors').empty().append(s);
+    }
+
+    // Colour rows: one dropdown per colour found in the SVG, plus "16 - base colour".
+    var colorRows = {}; // svg colour -> true
+    function onColorMapped(caller, htmlColor, color) { colorRows[htmlColor] = true; }
+    function buildColorChoices() {
+      var parent = $('#color_choices').empty()[0];
+      Object.keys(colorRows).forEach(function (htmlColor) {
+        var span = document.createElement('span'); span.className = 'choice'; parent.appendChild(span);
+        var label = document.createElement('label'); label.textContent = htmlColor; span.appendChild(label);
+        var cube = document.createElement('span'); cube.className = 'color_cube'; cube.style.backgroundColor = htmlColor; label.appendChild(cube);
+        var sel = document.createElement('select'); span.appendChild(sel);
+        var cur = ct.map[htmlColor];
+        ct.colors.forEach(function (c, i) {
+          var o = document.createElement('option'); o.value = i; o.textContent = c.text;
+          if (cur && c.id === cur.id) o.selected = true;
+          sel.appendChild(o);
+        });
+        sel.onchange = function () { ct.map[htmlColor] = ct.colors[sel.value]; run(false); };
+      });
+    }
+
+    function convertFace(text, o) {
+      if (text === null) return TORSO.emptyFace(o); // Nothing given: plain base colour.
+      return TORSO.convert(text, o);
+    }
+    function previewFace(sel, r, mirror) {
+      var pv = '<polygon points="' + r.outline.map(p => p.x + ',' + p.y).join(' ') + '" fill="none" stroke="#e00000" stroke-width="0.15"/>';
+      r.hulls.forEach(h => pv += '<polygon points="' + h.pts.map(p => p.x + ',' + p.y).join(' ') + '" fill="' + h.hex + '" stroke="' + h.hex + '" stroke-width="0.03"/>');
+      $(sel).html(pv); // The back preview is shown as seen from behind, like its template.
+    }
+
+    function run(rebuildChoices) {
+      $('#errors').empty(); $('#warnings').empty(); seenWarnings = {};
+      var o = {
+        pointsPer100px: Number.parseFloat($('#ppp').val()) || 3, colorTransformation: ct,
+        onWarning: onWarning, onError: onError, onColorMapped: onColorMapped, baseId: 16, baseHex: $('#basehex').val() || '#d0d0d0'
+      };
+      var front, back;
+      try {
+        front = convertFace(frontText, o);
+        back = convertFace(backText, o);
+      } catch (e) { onError('Conversion failed: ' + e); return; }
+      if (!front || !back) return;
+      if (rebuildChoices) buildColorChoices();
+
+      previewFace('#preview', front);
+      previewFace('#preview_back', back);
+      $('#result').val(TORSO.toLDraw(front.hulls, back.hulls, $('#partname').val(), $('#desc').val(), $('#subpart').val()));
+      $('#stats').text(front.hulls.length + ' front and ' + back.hulls.length + ' back polygons.');
+    }
+
+    function loadFace(inputSel, setText) {
+      $(inputSel).on('change', function (ev) {
+        var f = ev.target.files[0];
+        if (!f) { setText(null); run(true); return; }
+        var reader = new FileReader();
+        reader.onload = function () { setText(reader.result); ct = new LDR.ColorTransformation(); colorRows = {}; run(true); };
+        reader.readAsText(f);
+      });
+    }
+    loadFace('#svg_front', t => frontText = t);
+    loadFace('#svg_back', t => backText = t);
+    $('#ppp, #partname, #desc, #subpart, #basehex').on('change', () => run(false));
+    $('#download').on('click', function () {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([$('#result').val()], { type: 'text/plain' }));
+      a.download = $('#partname').val() || 'torso.dat'; a.click();
+    });
+  </script>
+</body>
+
+</html>

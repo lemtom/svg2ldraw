@@ -30,21 +30,30 @@ UTIL.TJunctionHandler.prototype.addPoints = function(paths) {
         var newPoints = [];
         var prev = path.pts[path.pts.length-1];
         var pts = [prev];
-        for(var i = 0; i < path.pts.length; i++) {
-            var p = path.pts[i];
+        for(const element of path.pts) {
+            var p = element;
             var line = new UTIL.Line(prev, p);
 
-            // Get all points s in S intersecting the line in sorted order:
-            var intersectionPoints = S
+            // Get all points s in S intersecting the line in sorted order.
+            // For performance, S is sorted by x, so only the points inside the (padded) bounding box of the line are
+            // tested exactly, found by binary search.
+            var len = Math.sqrt((p.x-prev.x)*(p.x-prev.x) + (p.y-prev.y)*(p.y-prev.y));
+            var pad = 1e-4 + 2*UTIL.EPSILON/Math.max(len, 1e-12); // The exact test is a cross product with tolerance.
+            var minX = Math.min(prev.x, p.x) - pad, maxX = Math.max(prev.x, p.x) + pad;
+            var minY = Math.min(prev.y, p.y) - pad, maxY = Math.max(prev.y, p.y) + pad;
+            var lo = 0, hi = S.length;
+            while(lo < hi) { var mid = (lo + hi) >> 1; if(S[mid].x < minX) lo = mid + 1; else hi = mid; }
+            var candidates = [];
+            for(var k = lo; k < S.length && S[k].x <= maxX; k++) {
+                if(S[k].y >= minY && S[k].y <= maxY) candidates.push(S[k]);
+            }
+            var intersectionPoints = candidates
                 .map(function(s) {return {p:s, intersection:line.lineSegmentPointIntersection(s)}})
                 .filter(x => 0 < x.intersection && 1 > x.intersection)
                 .sort((a, b) => a.intersection - b.intersection)
                 .map(x => x.p)
                 .filter((p, idx, a) => idx === 0 || !a[idx-1].equals(p));
-            /*if(intersectionPoints.length) {
-                console.log('Adding ' + intersectionPoints.length + ' points between ' + prev.x + ',' + prev.y + ' and ' + p.x + ',' + p.y + ':');
-                intersectionPoints.forEach(p => console.log(' ' + p.x + ', ' + p.y));
-            }//*/
+
             newPoints.push(...intersectionPoints);
 
             prev = p;
