@@ -189,7 +189,7 @@
       previewFace('#preview', front);
       previewFace('#preview_back', back);
       $('#result').val(TORSO.toLDraw(front.hulls, back.hulls, $('#partname').val(), $('#desc').val(), $('#subpart').val()));
-      $('#stats').text(front.hulls.length + ' front and ' + back.hulls.length + ' back polygons.');
+      $('#stats').text(front.hulls.length + ' front and ' + back.hulls.length + ' back polygons.' + LDCLEAN.summary());
     }
 
     function loadFace(inputSel, setText) {

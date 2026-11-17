@@ -58,6 +58,13 @@ SVG2LDRAW.decompose = function (simplified, onWarning) {
   return result;
 }
 
+/*
+  - Bounds start at +-Infinity. (Number.MIN_VALUE is the smallest POSITIVE number, so negative coordinates broke it.)
+  - Centering is exact: x is mapped to (x - midX)*scaleW. The original mirrored x with scalePoints and then
+    mirrored again in convert(), which left the output offset from the centre by minX.
+  - 'plane' option: 'xz' (default, as before) lays the print flat on top (Y = -thickness), 'xy' stands it
+    upright, facing the viewer at -Z (like a torso or head print). Thickness/box is only supported for 'xz'.
+ */
 SVG2LDRAW.Svg.prototype.toLDraw = function (decomposition, scaleW, scaleH, thickness, c, plane) {
   plane = plane || 'xz';
   if (plane === 'xy' && thickness > 0) {
@@ -92,6 +99,7 @@ SVG2LDRAW.Svg.prototype.toLDraw = function (decomposition, scaleW, scaleH, thick
   var reverse = (scaleW < 0) !== (scaleH < 0);
 
   var cnt = 0;
+  if (typeof LDCLEAN !== 'undefined') LDCLEAN.reset();
   var ret = '0 Name: ' + (decomposition.name ? decomposition.name : 'INSERT_NAME_HERE');
   ret += `
 0 Author: svg2ldraw
@@ -100,28 +108,40 @@ SVG2LDRAW.Svg.prototype.toLDraw = function (decomposition, scaleW, scaleH, thick
 `;
   // 'depth' is the coordinate along the plane normal: Y for 'xz', Z for 'xy'.
   function outputPath(pts, lDrawColor, depth) {
-    if (pts.length > 4) { // Extract a quad:
-      var pts1 = pts.slice(0, 4);
-      var pts2 = [pts[0]];
-      pts2.push(...pts.slice(3));
-      outputPath(pts1, lDrawColor, depth);
-      outputPath(pts2, lDrawColor, depth);
-      return;
-    }
-    ret += pts.length + " " + lDrawColor;
+    // 3D points in output order:
+    var p3 = [];
     for (var j = 0; j < pts.length; j++) {
       var k = reverse ? pts.length - 1 - j : j;
-      var cx = convert(pts[k].x, midX, scaleW, false);
+      var cx = parseFloat(convert(pts[k].x, midX, scaleW, false));
       if (plane === 'xy') {
         // Upright: X right, Y down (same as SVG), seen from -Z. Winding stays CCW as seen from there.
-        ret += " " + cx + " " + convert(pts[k].y, midY, scaleH, false) + " " + depth;
+        p3.push([cx, parseFloat(convert(pts[k].y, midY, scaleH, false)), depth]);
       }
       else {
-        ret += " " + cx + " " + depth + " " + convert(pts[k].y, midY, scaleH, true);
+        p3.push([cx, depth, parseFloat(convert(pts[k].y, midY, scaleH, true))]);
       }
     }
+    // IMPROVEMENT: LDCLEAN (ldraw_clean.js) splits the polygon into valid triangles/quads: no collinear
+    // vertices from T-junction points, no slivers (LDraw.org part rules). Without it, the old fan split is used.
+    var polys;
+    if (typeof LDCLEAN !== 'undefined') {
+      polys = LDCLEAN.split(p3, SVG2LDRAW.Precision);
+    }
+    else {
+      polys = [];
+      (function fan(q) {
+        if (q.length > 4) { fan(q.slice(0, 4)); fan([q[0]].concat(q.slice(3))); }
+        else polys.push(q);
+      })(p3);
+    }
+    polys.forEach(function (q) {
+      ret += q.length + " " + lDrawColor;
+      q.forEach(p => ret += " " + String(parseFloat(p[0].toFixed(SVG2LDRAW.Precision))) + " " +
+        String(parseFloat(p[1].toFixed(SVG2LDRAW.Precision))) + " " +
+        String(parseFloat(p[2].toFixed(SVG2LDRAW.Precision))));
     ret += '\n';
     cnt++;
+    });
   }
 
   // Round to the output precision, so neighbouring shapes keep sharing identical vertices.

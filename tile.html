@@ -222,7 +222,7 @@
       pv += '<rect x="' + (-g.hx) + '" y="' + (-g.hz) + '" width="' + (2 * g.hx) + '" height="' + (2 * g.hz) + '" fill="none" stroke="#e00000" stroke-width="0.15"/>';
       $('#preview').attr('viewBox', (-g.hx - pad) + ' ' + (-g.hz - pad) + ' ' + (2 * g.hx + 2 * pad) + ' ' + (2 * g.hz + 2 * pad)).html(pv);
       $('#result').val(TILE.toLDraw(face.hulls, $('#partname').val(), $('#desc').val(), $('#baselines').val()));
-      $('#stats').text(face.hulls.length + ' polygons.');
+      $('#stats').text(face.hulls.length + ' polygons.' + LDCLEAN.summary());
     }
 
     $('#size').on('change', function () { applySize(); run(false); });

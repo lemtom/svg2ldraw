@@ -235,7 +235,7 @@
         baseLines: $('#baselines').val()
       });
       $('#result').val(dat);
-      $('#stats').text(dat.split('\n').filter(l => /^[34] /.test(l)).length + ' polygons.');
+      $('#stats').text(dat.split('\n').filter(l => /^[34] /.test(l)).length + ' polygons.' + LDCLEAN.summary());
     }
 
     $('#mode').on('change', function () { $('#band').val(HEAD.MODES[currentMode()].defaultBand); setupMode(true); });

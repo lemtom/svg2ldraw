@@ -232,12 +232,9 @@ HEAD.toLDraw = function (o) { // o: {mode, band, faces:[face...], name, descript
     '0 !LICENSE Redistributable under CCAL version 2.0 : see CAreadme.txt\n0 BFC CERTIFY CCW\n\n' +
     o.baseLines.trim() + '\n';
   function emit(pts, color) {
-    if (pts.length > 4) { // LDraw has triangles and quads only: split the convex polygon.
-      emit(pts.slice(0, 4), color);
-      emit([pts[0]].concat(pts.slice(3)), color);
-      return;
-    }
-    ret += pts.length + ' ' + color + ' ' + pts.map(p => p.map(num).join(' ')).join(' ') + '\n';
+    // LDCLEAN splits the convex polygon into valid triangles/quads (no collinear vertices, no slivers).
+    LDCLEAN.split(pts, 4).forEach(poly =>
+      ret += poly.length + ' ' + color + ' ' + poly.map(p => p.map(num).join(' ')).join(' ') + '\n');
   }
   var cond = [];
   m.faces.forEach(function (fd, idx) {

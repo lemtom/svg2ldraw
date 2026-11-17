@@ -82,6 +82,10 @@ UTIL.Line.prototype.eval = function (x) {
 UTIL.getTurn = function (a, b, c) {
   return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 }
+// Scale the inline-point tolerance by adjacent edge lengths to avoid coordinate-scale dependence.
+UTIL.turnTolerance = function (a, b, c) {
+  return UTIL.EPSILON * Math.hypot(b.x - a.x, b.y - a.y) * Math.hypot(c.x - b.x, c.y - b.y);
+}
 UTIL.leftTurn = function (a, b, c) {
   return UTIL.getTurn(a, b, c) > UTIL.EPSILON;
 }
@@ -170,6 +174,9 @@ UTIL.removeInlinePoints = function (pts, pointsEqual) {
     return pts;
   }
   pointsEqual = pointsEqual || ((a, b) => a.equals(b));
+function inline(a, b, c) {
+    return Math.abs(UTIL.getTurn(a, b, c)) <= UTIL.turnTolerance(a, b, c);
+  }
 
   // Find index of min-point, as it is (almost) guaranteed not to be removed (if neighbours of min-point are inline, then min can be removed!):
   var iMin = 0, min = pts[0];
@@ -182,7 +189,7 @@ UTIL.removeInlinePoints = function (pts, pointsEqual) {
   }
 
   var prev = pts[(iMin + pts.length - 1) % pts.length], p = min, next = pts[(iMin + 1) % pts.length];
-  if (UTIL.noTurn(prev, p, next)) {
+  if (inline(prev, p, next)) {
     // Remove min!
     var ptsNoMin = pts.slice(0, iMin);
     ptsNoMin.push(...pts.slice(iMin + 1));
@@ -200,7 +207,7 @@ UTIL.removeInlinePoints = function (pts, pointsEqual) {
       p = prev; // Ignore this point.
       continue; // Duplicate
     }
-    if (UTIL.noTurn(prev, p, next)) {
+    if (inline(prev, p, next)) {
       //Removing inline point
       p = prev; // Ignore this point.
       continue; // Inline

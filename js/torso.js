@@ -151,18 +151,15 @@ TORSO.emptyFace = function (o) {
  */
 TORSO.toLDraw = function (frontHulls, backHulls, name, description, subpart) {
   function num(x) { return String(parseFloat(x.toFixed(3))); }
+  LDCLEAN.reset();
   var ret = '0 ' + description + '\n0 Name: ' + name + '\n0 Author: svg2ldraw\n' +
     '0 !LICENSE Redistributable under CCAL version 2.0 : see CAreadme.txt\n0 BFC CERTIFY CCW\n\n' +
     '1 16 0 0 0 1 0 0 0 1 0 0 0 1 ' + subpart + '\n';
   function out(pts, color, back) {
-    if (pts.length > 4) { // LDraw has triangles and quads only: split convex polygon.
-      out(pts.slice(0, 4), color, back);
-      out([pts[0]].concat(pts.slice(3)), color, back);
-      return;
-    }
-    ret += pts.length + ' ' + color;
-    pts.forEach(p => ret += ' ' + num(back ? -p.x : p.x) + ' ' + num(p.y) + ' ' + (back ? -TORSO.Z : TORSO.Z));
-    ret += '\n';
+    // LDCLEAN splits the convex polygon into valid triangles/quads (no collinear vertices, no slivers).
+    var pts3 = pts.map(p => [back ? -p.x : p.x, p.y, back ? -TORSO.Z : TORSO.Z]);
+    LDCLEAN.split(pts3, 3).forEach(poly =>
+      ret += poly.length + ' ' + color + ' ' + poly.map(p => p.map(num).join(' ')).join(' ') + '\n');
   }
   // The neck mark (a cylinder piece at the neck opening), found missing when checking in LD Part Editor.
   ret += '\n0 // Neck mark\n1 16 0 -4 0 4.243 0 -4.243 0 -8 0 -4.243 0 -4.243 1-4cyli.dat\n';

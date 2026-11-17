@@ -135,17 +135,13 @@ TILE.emptyFace = function(o) {
   made CCW seen from above (the normal must point to -Y) using the Newell normal.
  */
 TILE.toLDraw = function(hulls, name, description, baseLines) {
-    function num(x) { return String(Number.parseFloat(x.toFixed(3))); }
+    function num(x) { return String(parseFloat(x.toFixed(3))); }
+    LDCLEAN.reset();
     var ret = '0 ' + description + '\n0 Name: ' + name + '\n0 Author: svg2ldraw\n' +
               '0 !LICENSE Redistributable under CCAL version 2.0 : see CAreadme.txt\n0 BFC CERTIFY CCW\n\n';
     if(baseLines) ret += baseLines.replace(/\s+$/, '') + '\n';
     ret += '\n';
     function out(pts, color) {
-        if(pts.length > 4) { // LDraw has triangles and quads only: split the convex polygon.
-            out(pts.slice(0, 4), color);
-            out([pts[0]].concat(pts.slice(3)), color);
-            return;
-        }
         // 3D points (X = x, Z = -y); the Newell normal's Y component is -(sum of (z_i - z_j)(x_i + x_j)).
         var P = pts.map(p => ({x:p.x, z:-p.y}));
         var ny = 0;
@@ -155,9 +151,9 @@ TILE.toLDraw = function(hulls, name, description, baseLines) {
         }
         // For a CCW polygon in the (x, z) plane (seen from -Y, z up) the normal points to -Y, which is ny < 0.
         if(ny > 0) P.reverse();
-        ret += P.length + ' ' + color;
-        P.forEach(p => ret += ' ' + num(p.x) + ' 0 ' + num(p.z));
-        ret += '\n';
+        // LDCLEAN splits the convex polygon into valid triangles/quads (no collinear vertices, no slivers).
+        LDCLEAN.split(P.map(p => [p.x, 0, p.z]), 3).forEach(poly =>
+            ret += poly.length + ' ' + color + ' ' + poly.map(p => p.map(num).join(' ')).join(' ') + '\n');
     }
     hulls.forEach(h => out(h.pts, h.lDrawColor));
     return ret;
