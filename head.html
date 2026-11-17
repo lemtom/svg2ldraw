@@ -87,6 +87,7 @@
   <script src="js/LDRGeometries.js"></script>
   <script src="js/LDRLoader.js"></script>
   <script src="js/svg2ldraw.js"></script>
+  <script src="js/ldraw_clean.js"></script>
   <script src="js/torso.js"></script>
   <script src="js/head.js"></script>
 
@@ -104,6 +105,8 @@
     <p><label for="band">Print covers</label>
       <select id="band">
         <option value="wall">The straight wall only (y 4 to 17)</option>
+        <option value="bottom">The wall and the rounded bottom, e.g. a mouth (y 4 to 21) - one-sided only</option>
+        <option value="top">The wall and the rounded top, e.g. a hair line (y 0 to 17) - one-sided only</option>
         <option value="full">The wall and the rounded top and bottom (y 0 to 21)</option>
       </select>
     </p>
@@ -179,7 +182,11 @@
     function setupMode(resetBase) {
       var mode = currentMode(), m = HEAD.MODES[mode];
       var band = $('#band').val();
-      if (resetBase) $('#baselines').val(HEAD.BASE_LINES[mode]);
+      // 'top' and 'bottom' bands only exist for the one-sided face (the base parts are adapted for it).
+      $('#band option[value=top], #band option[value=bottom]').prop('disabled', mode !== 'one');
+      if (mode !== 'one' && (band === 'top' || band === 'bottom')) { band = HEAD.MODES[mode].defaultBand; $('#band').val(band); }
+      // For the one-sided face the base parts depend on the band (a printed rim replaces its torus pieces).
+      if (resetBase || mode === 'one') $('#baselines').val(HEAD.baseLines(mode, band));
       var rows = $('#file_rows').empty();
       m.faces.forEach(function (fd, idx) {
         var label = document.createElement('label'); label.textContent = fd.name + ' SVG' + (m.faces.length > 1 ? ' (optional)' : '');
@@ -231,7 +238,7 @@
       });
 
       var dat = HEAD.toLDraw({
-        mode: mode, band: band, faces: faces, name: $('#partname').val(), description: $('#desc').val(),
+        mode: mode, band: band, faces: faces, name: $('#partname').val(), description: $('#desc').val(), baseId: 16,
         baseLines: $('#baselines').val()
       });
       $('#result').val(dat);

@@ -27,7 +27,7 @@ HEAD.RINGS = [[8.0, 0.0], [9.9136, 0.3046], [11.5352, 1.1718], [12.6192, 2.4691]
 [13.0, 17.0], [12.6192, 18.5309], [11.5352, 19.8282], [9.9136, 20.6954], [8.0, 21.0]];
 
 HEAD.MODES = {
-  one: { label: 'One-sided face', facets: 4, defaultBand: 'wall', faces: [{ name: 'Face', center: 0 }] },
+  one: { label: 'One-sided face', facets: 4, defaultBand: 'wall', rimExtra: 2, faces: [{ name: 'Face', center: 0 }] },
   two: { label: 'Two-sided face', facets: 6, defaultBand: 'full', faces: [{ name: 'Front', center: 0 }, { name: 'Back', center: 180 }] },
   continuous: { label: 'Continuous pattern', facets: 16, defaultBand: 'full', faces: [{ name: 'Pattern', center: 0 }] }
 };
@@ -36,16 +36,38 @@ HEAD.MODES = {
   Base parts per mode: everything that is NOT printed. The 'continuous' preset assumes s\3626bs02.dat alone is enough when
   every facet is printed.
  */
-HEAD.BASE_LINES = {
-  one:
+/*
+  One-sided preset, split into parts, because which rim pieces remain depends on the band:
+    - the two quarter torus pieces per rim (t04o6250) cover the whole FRONT half (90 degrees to each side of the face);
+    - the two 1-8cyli pieces cover the wall from 45 to 90 degrees on each side.
+  When the print band includes a rim (see HEAD.band), the converter prints that rim itself over the full front half
+  (the face in the middle 90 degrees, plain base colour for the 45 degrees on each side), so the matching two torus
+  pieces must NOT be in the base lines, or the surfaces would be doubled.
+ */
+HEAD.BASE_ONE = {
+  common:
     '1 16 0 0 0 1 0 0 0 1 0 0 0 1 s\\3626bs02.dat\n' +
-    '1 16 0 0 0 1 0 0 0 1 0 0 0 1 s\\3626bs04.dat\n' +
+    '1 16 0 0 0 1 0 0 0 1 0 0 0 1 s\\3626bs04.dat\n',
+  top:
     '1 16 0 4 0 0 0 -8 0 -6.4 0 -8 0 0 t04o6250.dat\n' +
-    '1 16 0 4 0 8 0 0 0 -6.4 0 0 0 -8 t04o6250.dat\n' +
+    '1 16 0 4 0 8 0 0 0 -6.4 0 0 0 -8 t04o6250.dat\n',
+  bottom:
     '1 16 0 17 0 0 0 8 0 6.4 0 -8 0 0 t04o6250.dat\n' +
-    '1 16 0 17 0 -8 0 0 0 6.4 0 0 0 -8 t04o6250.dat\n' +
+    '1 16 0 17 0 -8 0 0 0 6.4 0 0 0 -8 t04o6250.dat\n',
+  wall:
     '1 16 0 4 0 13 0 0 0 13 0 0 0 -13 1-8cyli.dat\n' +
-    '1 16 0 4 0 -13 0 0 0 13 0 0 0 -13 1-8cyli.dat\n',
+    '1 16 0 4 0 -13 0 0 0 13 0 0 0 -13 1-8cyli.dat\n'
+};
+
+/* Base lines for a mode and band. */
+HEAD.baseLines = function (mode, band) {
+  if (mode !== 'one') return HEAD.BASE_LINES[mode];
+  var b = HEAD.band(band), B = HEAD.BASE_ONE;
+  return B.common + (b.hasTop ? '' : B.top) + (b.hasBottom ? '' : B.bottom) + B.wall;
+}
+
+HEAD.BASE_LINES = {
+  one: '', // Depends on the band: use HEAD.baseLines('one', band).
   two:
     '1 16 0 0 0 1 0 0 0 1 0 0 0 1 s\\3626bs02.dat\n' +
     '1 16 0 4 0 8 0 0 0 -6.4 0 0 0 -8 t04o6250.dat\n' +
@@ -64,14 +86,20 @@ HEAD.BASE_LINES = {
 
 /* Ring indices and cumulative profile arc length for the chosen band ('wall' = y 4..17, 'full' = y 0..21). */
 HEAD.band = function (band) {
-  var rings = band === 'wall' ? [4, 5] : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  // 'wall' = y 4..17; 'top' adds the rounded top (y 0..17); 'bottom' adds the rounded bottom (y 4..21); 'full' = y 0..21.
+  // The frame always starts at the first ring of the band, so with 'bottom' the wall keeps its position at the top of
+  // the template and the extra height is added below it.
+  var rings = { wall: [4, 5], top: [0, 1, 2, 3, 4, 5], bottom: [4, 5, 6, 7, 8, 9] }[band] || [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
   var S = [0];
   for (var k = 1; k < rings.length; k++) {
     var a = HEAD.RINGS[rings[k - 1]], b = HEAD.RINGS[rings[k]];
     S.push(S[k - 1] + Math.hypot(b[0] - a[0], b[1] - a[1]));
   }
-  return { rings: rings, S: S, H: S[S.length - 1] };
+  return { rings: rings, S: S, H: S[S.length - 1], hasTop: rings[0] < 4, hasBottom: rings[rings.length - 1] > 5 };
 }
+
+/* A row (between rings[k] and rings[k+1]) is a rim row when it lies on the rounded top or bottom. */
+HEAD.isRimRow = function (b, k) { return b.rings[k + 1] <= 4 || b.rings[k] >= 5; }
 
 HEAD.frame = function (mode, band) {
   var b = HEAD.band(band);
@@ -177,16 +205,21 @@ HEAD.lerp = function (p, q, t) { return [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] 
   Maps the flat polygons of one face onto the facet cells. Returns 3D polygons [{pts:[[x,y,z]...], color}].
   Winding is made counter-clockwise as seen from outside (outward normal).
  */
-HEAD.mapFace = function (face, nFacets, aCenter, band) {
+HEAD.mapFace = function (face, nFacets, aCenter, band, rimExtra, baseId) {
   var b = HEAD.band(band), out = [];
   var first = aCenter - nFacets * HEAD.FACET_DEG / 2;
-  for (var i = 0; i < nFacets; i++) {
+  rimExtra = rimExtra || 0;
+  // Facets outside the printed window (i < 0 or i >= nFacets) are only generated for rim rows, in the base colour.
+  for (var i = -rimExtra; i < nFacets + rimExtra; i++) {
+    var outside = i < 0 || i >= nFacets;
     var a0 = first + i * HEAD.FACET_DEG, a1 = a0 + HEAD.FACET_DEG, U0 = i * HEAD.FACET_W, U1 = U0 + HEAD.FACET_W;
     for (var k = 0; k < b.rings.length - 1; k++) {
+      if (outside && !HEAD.isRimRow(b, k)) continue;
       var ja = b.rings[k], jb = b.rings[k + 1], V0 = b.S[k], V1 = b.S[k + 1];
       var A0 = HEAD.ringPoint(ja, a0), A1 = HEAD.ringPoint(ja, a1), B0 = HEAD.ringPoint(jb, a0), B1 = HEAD.ringPoint(jb, a1);
       var cell = [new UTIL.Point(U0, V0), new UTIL.Point(U0, V1), new UTIL.Point(U1, V1), new UTIL.Point(U1, V0)];
-      face.hulls.forEach(function (h) {
+      var cellHulls = outside ? [{ pts: cell, lDrawColor: baseId }] : face.hulls;
+      cellHulls.forEach(function (h) {
         var ring = UTIL.cleanRing(TORSO.clipConvex(h.pts, cell));
         if (!ring) return;
         var pts = ring.map(function (p) {
@@ -210,13 +243,15 @@ HEAD.mapFace = function (face, nFacets, aCenter, band) {
 }
 
 /* Conditional lines on every facet border (meridian) of a face, for each ring cell, like LDraw's primitives. */
-HEAD.conditionalLines = function (nFacets, aCenter, band, closed) {
+HEAD.conditionalLines = function (nFacets, aCenter, band, closed, rimExtra) {
   var b = HEAD.band(band), first = aCenter - nFacets * HEAD.FACET_DEG / 2, lines = [];
+  rimExtra = rimExtra || 0;
   var n = closed ? nFacets : nFacets + 1; // A closed (full circle) pattern has no extra meridian.
   function f(p) { return p.map(x => String(parseFloat(x.toFixed(4)))).join(' '); }
-  for (var m = 0; m < n; m++) {
+  for (var m = -rimExtra; m < n + rimExtra; m++) {
     var a = first + m * HEAD.FACET_DEG;
     for (var k = 0; k < b.rings.length - 1; k++) {
+      if ((m < 0 || m >= n) && !HEAD.isRimRow(b, k)) continue; // Outside the printed window: rim rows only.
       var ja = b.rings[k], jb = b.rings[k + 1];
       lines.push('5 24 ' + f(HEAD.ringPoint(ja, a)) + ' ' + f(HEAD.ringPoint(jb, a)) + ' ' +
         f(HEAD.ringPoint(ja, a - HEAD.FACET_DEG)) + ' ' + f(HEAD.ringPoint(ja, a + HEAD.FACET_DEG)));
@@ -227,6 +262,7 @@ HEAD.conditionalLines = function (nFacets, aCenter, band, closed) {
 
 HEAD.toLDraw = function (o) { // o: {mode, band, faces:[face...], name, description, baseLines}
   var m = HEAD.MODES[o.mode];
+  LDCLEAN.reset();
   function num(x) { return String(parseFloat(x.toFixed(4))); }
   var ret = '0 ' + o.description + '\n0 Name: ' + o.name + '\n0 Author: svg2ldraw\n' +
     '0 !LICENSE Redistributable under CCAL version 2.0 : see CAreadme.txt\n0 BFC CERTIFY CCW\n\n' +
@@ -239,8 +275,8 @@ HEAD.toLDraw = function (o) { // o: {mode, band, faces:[face...], name, descript
   var cond = [];
   m.faces.forEach(function (fd, idx) {
     ret += '\n0 // ' + fd.name + '\n';
-    HEAD.mapFace(o.faces[idx], m.facets, fd.center, o.band).forEach(poly => emit(poly.pts, poly.color));
-    cond = cond.concat(HEAD.conditionalLines(m.facets, fd.center, o.band, m.facets === 16));
+    HEAD.mapFace(o.faces[idx], m.facets, fd.center, o.band, m.rimExtra, o.baseId).forEach(poly => emit(poly.pts, poly.color));
+    cond = cond.concat(HEAD.conditionalLines(m.facets, fd.center, o.band, m.facets === 16, m.rimExtra));
   });
   ret += '\n0 // Conditional Lines\n' + cond.join('\n') + '\n';
   return ret;
