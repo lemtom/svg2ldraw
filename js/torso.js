@@ -118,10 +118,8 @@ TORSO.convert = function (svgText, o) {
   var ct = o.colorTransformation, hulls = [];
   result.paths.forEach(function (path) {
     // Clip to the outline (prints that stick out), round to the output precision, drop slivers.
-    var ring = TORSO.clipConvex(path.pts, outline).map(p => new UTIL.Point(
-      Math.round(p.x * 1000) / 1000, Math.round(p.y * 1000) / 1000));
-    ring = UTIL.cleanRing(ring);
-    if (!ring) return;
+    var ring = TORSO.clipConvex(path.pts, outline); // Rounded after merging, see below.
+    if (!ring || ring.length < 3) return;
     if (UTIL.signedArea(ring) > 0) ring.reverse(); // Keep right-turning = facing -Z.
     var id, hex;
     if (path.color === TORSO.BASE) { id = o.baseId; hex = o.baseHex; }
@@ -131,6 +129,15 @@ TORSO.convert = function (svgText, o) {
     }
     hulls.push({ pts: ring, lDrawColor: id, hex: hex, svgColor: path.color });
   });
+  // Merge same-coloured pieces where the union is still convex (removes cut lines running from the artwork to the border).
+  if (typeof LDCLEAN !== 'undefined') hulls = LDCLEAN.mergeFlat(hulls);
+  // Round to the output precision and drop slivers AFTER merging: the merge needs the exact (unrounded) shared edges.
+  hulls = hulls.map(function (h) {
+    var ring = UTIL.cleanRing(h.pts.map(p => new UTIL.Point(Math.round(p.x * 1000) / 1000, Math.round(p.y * 1000) / 1000)));
+    if (!ring) return null;
+    if (UTIL.signedArea(ring) > 0) ring.reverse();
+    return Object.assign({}, h, { pts: ring });
+  }).filter(h => h !== null);
   return { hulls: hulls, outline: outline };
 }
 

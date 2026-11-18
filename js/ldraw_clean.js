@@ -195,6 +195,12 @@ LDCLEAN.split = function (pts, decimals) {
     });
   }
 
+  // Triangles with an edge shorter than 0.005 LDU are invisible specks (and their winding is numerically unreliable).
+  tris = tris.filter(function (t) {
+    var s = Math.min(LDCLEAN.len(LDCLEAN.sub(t[0], t[1])), LDCLEAN.len(LDCLEAN.sub(t[1], t[2])), LDCLEAN.len(LDCLEAN.sub(t[2], t[0])));
+    if (s < 0.005) { S.slivers++; return false; }
+    return true;
+  });
   var out = tris.length > 1 ? LDCLEAN.mergeToQuads(tris) : tris;
   // Identical polygons are not allowed in a part file: keep only the first of each.
   out = out.filter(function (p) {
@@ -215,4 +221,110 @@ LDCLEAN.summary = function () {
   if (S.duplicates) parts.push(S.duplicates + ' duplicate polygon(s) dropped');
   if (S.unresolved) parts.push(S.unresolved + ' thin triangle(s) could not be fixed');
   return parts.length ? ' Clean-up: ' + parts.join(', ') + '.' : '';
+}
+
+/*
+  Merges flat (2D) convex pieces of the same colour back together where their union is still convex.
+
+  Why: the convex decomposition cuts the background colour with long lines that start at the corners of the artwork and
+  run on to the border of the frame (a "fan" of thin pieces). When the frame is cut up into cells afterwards (the head
+  facets, ring rows) those lines show up in cells far away from any artwork. Merging removes every cut that does not
+  separate anything convex-wise, so an untouched cell becomes a single quad again.
+
+  pieces: [{pts:[{x,y}...], lDrawColor}] with right-turning (clockwise on screen) rings. Returns the same kind of list.
+  Vertices that lie on the boundary of a merged piece (also collinear ones, which neighbouring pieces use as
+  T-junction points) are kept; LDCLEAN.split later turns them into valid triangles. Only points inside the union
+  disappear.
+ */
+LDCLEAN.mergeFlat = function (pieces) {
+  var KEY = 1e4;
+  var key = p => Math.round(p.x * KEY) + ',' + Math.round(p.y * KEY);
+  function area(pts) {
+    var a = 0;
+    for (var i = 0; i < pts.length; i++) { var p = pts[i], q = pts[(i + 1) % pts.length]; a += p.x * q.y - q.x * p.y; }
+    return a / 2;
+  }
+  // Convex hull (monotone chain) that keeps collinear boundary points; input points are unique.
+  function hull(points) {
+    var P = points.slice().sort((a, b) => a.x - b.x || a.y - b.y);
+    function cross(o, a, b) { return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x); }
+    var tol = 1e-9;
+    var lower = [], upper = [];
+    P.forEach(function (p) {
+      while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) < -tol) lower.pop();
+      lower.push(p);
+    });
+    for (var i = P.length - 1; i >= 0; i--) {
+      var p = P[i];
+      while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) < -tol) upper.pop();
+      upper.push(p);
+    }
+    lower.pop(); upper.pop();
+    return lower.concat(upper); // Counter-clockwise (y up), collinear points kept.
+  }
+  function unionHull(group) { // Returns {ring, sumArea, hullArea} for a list of pieces.
+    var seen = new Map(), sum = 0;
+    group.forEach(function (g) {
+      sum += Math.abs(area(g.pts));
+      g.pts.forEach(p => { var k = key(p); if (!seen.has(k)) seen.set(k, p); });
+    });
+    var pts = Array.from(seen.values());
+    var h = hull(pts);
+    // Duplicates of hull points may sneak in when the same point is visited twice on a collinear run; drop repeats.
+    var uniq = [], hk = new Set();
+    h.forEach(p => { var k = key(p); if (!hk.has(k)) { hk.add(k); uniq.push(p); } });
+    return { ring: uniq, sumArea: sum, hullArea: Math.abs(area(uniq)) };
+  }
+  function sameArea(u) { return Math.abs(u.hullArea - u.sumArea) <= 1e-6 + 1e-8 * u.hullArea; }
+  function orient(ring, like) { // Same winding as the original pieces.
+    return (area(ring) > 0) === (area(like) > 0) ? ring : ring.slice().reverse();
+  }
+
+  var byColor = new Map();
+  pieces.forEach(p => { if (!byColor.has(p.lDrawColor)) byColor.set(p.lDrawColor, []); byColor.get(p.lDrawColor).push(p); });
+  var out = [];
+  byColor.forEach(function (list, color) {
+    // Neighbours: pieces that share at least two vertices.
+    var owners = new Map();
+    list.forEach((g, i) => g.pts.forEach(p => { var k = key(p); if (!owners.has(k)) owners.set(k, new Set()); owners.get(k).add(i); }));
+    var shared = list.map(() => new Map());
+    owners.forEach(set => { var a = Array.from(set); a.forEach(i => a.forEach(j => { if (i !== j) shared[i].set(j, (shared[i].get(j) || 0) + 1); })); });
+    // Connected components:
+    var comp = list.map((g, i) => i), find = i => comp[i] === i ? i : (comp[i] = find(comp[i]));
+    shared.forEach((m, i) => m.forEach((n, j) => { if (n >= 2) comp[find(i)] = find(j); }));
+    var groups = new Map();
+    list.forEach((g, i) => { var r = find(i); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(g); });
+
+    groups.forEach(function (group) {
+      if (group.length === 1) { out.push(group[0]); return; }
+      var u = unionHull(group);
+      if (sameArea(u)) { // The whole component is convex: one piece.
+        out.push(Object.assign({}, group[0], { pts: orient(u.ring, group[0].pts) })); // Keeps hex etc. of the first piece.
+        return;
+      }
+      // Otherwise merge neighbouring pairs while the union stays convex.
+      var cur = group.slice(), changed = true, guard = 0;
+      while (changed && guard++ < 2000) {
+        changed = false;
+        var own = new Map();
+        cur.forEach((g, i) => g.pts.forEach(p => { var k = key(p); if (!own.has(k)) own.set(k, []); own.get(k).push(i); }));
+        var counts = new Map();
+        own.forEach(a => a.forEach(i => a.forEach(j => { if (i < j) { var kk = i + ',' + j; counts.set(kk, (counts.get(kk) || 0) + 1); } })));
+        for (var e of counts) {
+          if (e[1] < 2) continue;
+          var ij = e[0].split(',').map(Number), A = cur[ij[0]], B = cur[ij[1]];
+          var uu = unionHull([A, B]);
+          if (sameArea(uu)) {
+            var merged = Object.assign({}, A, { pts: orient(uu.ring, A.pts) });
+            cur = cur.filter((g, i) => i !== ij[0] && i !== ij[1]);
+            cur.push(merged);
+            changed = true;
+            break;
+          }
+        }
+      }
+      cur.forEach(g => out.push(g));
+    });
+  });
+  return out;
 }

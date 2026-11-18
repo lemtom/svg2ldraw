@@ -54,6 +54,13 @@ HEAD.BASE_ONE = {
   bottom:
     '1 16 0 17 0 0 0 8 0 6.4 0 -8 0 0 t04o6250.dat\n' +
     '1 16 0 17 0 -8 0 0 0 6.4 0 0 0 -8 t04o6250.dat\n',
+  // Printed rim: the 45 degrees on each side of the printed 90 degrees stay as torus pieces (t08o6250)
+  topSide:
+    '1 16 0 4 0 -8 0 0 0 -6.4 0 0 0 -8 t08o6250.dat\n' +
+    '1 16 0 4 0 8 0 0 0 -6.4 0 0 0 -8 t08o6250.dat\n',
+  bottomSide:
+    '1 16 0 17 0 -8 0 0 0 6.4 0 0 0 -8 t08o6250.dat\n' +
+    '1 16 0 17 0 8 0 0 0 6.4 0 0 0 -8 t08o6250.dat\n',
   wall:
     '1 16 0 4 0 13 0 0 0 13 0 0 0 -13 1-8cyli.dat\n' +
     '1 16 0 4 0 -13 0 0 0 13 0 0 0 -13 1-8cyli.dat\n'
@@ -63,7 +70,7 @@ HEAD.BASE_ONE = {
 HEAD.baseLines = function (mode, band) {
   if (mode !== 'one') return HEAD.BASE_LINES[mode];
   var b = HEAD.band(band), B = HEAD.BASE_ONE;
-  return B.common + (b.hasTop ? '' : B.top) + (b.hasBottom ? '' : B.bottom) + B.wall;
+  return B.common + (b.hasTop ? B.topSide : B.top) + (b.hasBottom ? B.bottomSide : B.bottom) + B.wall;
 }
 
 HEAD.BASE_LINES = {
@@ -190,7 +197,7 @@ HEAD.finish = function (paths, frame, o) {
     var id, hex;
     if (path.color === HEAD.BASE) { id = o.baseId; hex = o.baseHex; }
     else { var m = o.colorTransformation.transform(path.color, o.onColorMapped); id = m.id; hex = m.hex; }
-    hulls.push({ pts: ring, lDrawColor: id, hex: hex });
+    hulls.push({ pts: ring, lDrawColor: id, hex: hex, base: path.color === HEAD.BASE });
   });
   return { hulls: hulls, W: frame.W, H: frame.H };
 }
@@ -206,9 +213,23 @@ HEAD.lerp = function (p, q, t) { return [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] 
   Winding is made counter-clockwise as seen from outside (outward normal).
  */
 HEAD.mapFace = function (face, nFacets, aCenter, band, rimExtra, baseId) {
-  var b = HEAD.band(band), out = [];
+  var b = HEAD.band(band), out = [], emptyCells = [], pool = [];
   var first = aCenter - nFacets * HEAD.FACET_DEG / 2;
   rimExtra = rimExtra || 0;
+
+  // Newell normal; returns the polygon with outward winding, or null for a sliver.
+  function outward(pts) {
+    var n = [0, 0, 0], c = [0, 0, 0];
+    for (var m = 0; m < pts.length; m++) {
+      var p = pts[m], q = pts[(m + 1) % pts.length];
+      n[0] += (p[1] - q[1]) * (p[2] + q[2]); n[1] += (p[2] - q[2]) * (p[0] + q[0]); n[2] += (p[0] - q[0]) * (p[1] + q[1]);
+      c[0] += p[0]; c[2] += p[2];
+    }
+    if (Math.hypot(n[0], n[1], n[2]) < 1e-6) return null; // Sliver.
+    if (n[0] * c[0] + n[2] * c[2] < 0) pts.reverse();
+    return pts;
+  }
+
   // Facets outside the printed window (i < 0 or i >= nFacets) are only generated for rim rows, in the base colour.
   for (var i = -rimExtra; i < nFacets + rimExtra; i++) {
     var outside = i < 0 || i >= nFacets;
@@ -218,27 +239,82 @@ HEAD.mapFace = function (face, nFacets, aCenter, band, rimExtra, baseId) {
       var ja = b.rings[k], jb = b.rings[k + 1], V0 = b.S[k], V1 = b.S[k + 1];
       var A0 = HEAD.ringPoint(ja, a0), A1 = HEAD.ringPoint(ja, a1), B0 = HEAD.ringPoint(jb, a0), B1 = HEAD.ringPoint(jb, a1);
       var cell = [new UTIL.Point(U0, V0), new UTIL.Point(U0, V1), new UTIL.Point(U1, V1), new UTIL.Point(U1, V0)];
-      var cellHulls = outside ? [{ pts: cell, lDrawColor: baseId }] : face.hulls;
+
+      // A cell without any art is ONE polygon (the cell itself). The global decomposition of the base colour
+      // radiates fans from the art's vertices across the whole head, which gives many needless triangles.
+      var hasArt = !outside && face.hulls.some(function (h) {
+        if (h.base) return false;
+        var r = UTIL.cleanRing(TORSO.clipConvex(h.pts, cell));
+        return r && Math.abs(UTIL.signedArea(r)) > 1e-7;
+      });
+      if (!hasArt) {
+        emptyCells.push({ ring: [A0, B0, B1, A1] }); // Same order as 'cell'.
+        continue;
+      }
+
+      // The art of this cell (clipped to it), and the rest of the cell in the base colour, decomposed locally.
+      // IMPROVEMENT: the base colour of the whole face used to be decomposed globally, which sent long fans of
+      // triangles from the art's vertices across the head. Per cell, the base pieces stay inside the cell.
+      var artPieces = [];
+      face.hulls.forEach(function (h) {
+        if (h.base) return;
+        var r = UTIL.cleanRing(TORSO.clipConvex(h.pts, cell));
+        if (r && Math.abs(UTIL.signedArea(r)) > 1e-7) artPieces.push(new UTIL.Path(r, h.lDrawColor));
+      });
+      var cellFill = new UTIL.Path(cell.map(p => p.clone()), HEAD.BASE);
+      var local = SVG2LDRAW.decompose({ paths: [cellFill].concat(artPieces), width: HEAD.FACET_W, height: V1 - V0, viewBox: null },
+        HEAD.onCellWarning || function () { });
+      var cellHulls = local.paths.map(function (lp) {
+        var r = UTIL.cleanRing(TORSO.clipConvex(lp.pts, cell));
+        if (!r) return null;
+        if (UTIL.signedArea(r) > 0) r.reverse();
+        return { pts: r, lDrawColor: lp.color === HEAD.BASE ? baseId : lp.color };
+      }).filter(h => h);
       cellHulls.forEach(function (h) {
-        var ring = UTIL.cleanRing(TORSO.clipConvex(h.pts, cell));
-        if (!ring) return;
+        var ring = h.pts;
         var pts = ring.map(function (p) {
           var s = (p.x - U0) / HEAD.FACET_W, t = (p.y - V0) / (V1 - V0);
           return HEAD.lerp(HEAD.lerp(A0, A1, s), HEAD.lerp(B0, B1, s), t);
         });
-        // Newell normal; reverse if it points inwards (towards the head axis).
-        var n = [0, 0, 0], c = [0, 0, 0];
-        for (var m = 0; m < pts.length; m++) {
-          var p = pts[m], q = pts[(m + 1) % pts.length];
-          n[0] += (p[1] - q[1]) * (p[2] + q[2]); n[1] += (p[2] - q[2]) * (p[0] + q[0]); n[2] += (p[0] - q[0]) * (p[1] + q[1]);
-          c[0] += p[0]; c[2] += p[2];
-        }
-        if (Math.hypot(n[0], n[1], n[2]) < 1e-6) return; // Sliver.
-        if (n[0] * c[0] + n[2] * c[2] < 0) pts.reverse();
+        pts = outward(pts);
+        if (!pts) return;
+        pts.forEach(p => pool.push(p));
         out.push({ pts: pts, color: h.lDrawColor });
       });
     }
   }
+
+  // Empty cells: the cell as one polygon (its own corner vertices; neighbours' vertices are added below).
+  emptyCells.forEach(function (ec) {
+    var pts = outward(ec.ring.slice());
+    if (pts) out.push({ pts: pts, color: baseId });
+  });
+
+  // Shared vertices across facet borders. A vertex of one polygon that lies in the middle of another polygon's edge is a
+  // T-junction. Renderers (LDView, LDraw Studio) smooth normals only between polygons that share vertices, so a T-junction
+  // on a facet border shows up as a visible seam, as around a printed area. Every pool vertex on such an edge is inserted
+  // into that edge: LDCLEAN.split then keeps it as a real corner (a fan of valid triangles) instead of an angle of 180.
+  var all = [];
+  out.forEach(function (poly) { poly.pts.forEach(function (v) { all.push(v); }); });
+  out.forEach(function (poly) {
+    var ring = poly.pts, pts = [];
+    for (var e = 0; e < ring.length; e++) {
+      var P = ring[e], Q = ring[(e + 1) % ring.length];
+      pts.push(P);
+      var d = [Q[0] - P[0], Q[1] - P[1], Q[2] - P[2]], dd = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+      if (dd < 1e-12) continue;
+      var onEdge = [];
+      all.forEach(function (v) {
+        var t = ((v[0] - P[0]) * d[0] + (v[1] - P[1]) * d[1] + (v[2] - P[2]) * d[2]) / dd;
+        if (t <= 1e-6 || t >= 1 - 1e-6) return;
+        var dx = P[0] + t * d[0] - v[0], dy = P[1] + t * d[1] - v[1], dz = P[2] + t * d[2] - v[2];
+        if (dx * dx + dy * dy + dz * dz < 1e-8) onEdge.push({ t: t, v: v }); // Within 0.0001 LDU.
+      });
+      onEdge.sort((x, y) => x.t - y.t);
+      onEdge.forEach(function (o, idx) { if (idx === 0 || Math.abs(o.t - onEdge[idx - 1].t) > 1e-9) pts.push(o.v); });
+    }
+    poly.pts = pts;
+  });
   return out;
 }
 
@@ -255,6 +331,27 @@ HEAD.conditionalLines = function (nFacets, aCenter, band, closed, rimExtra) {
       var ja = b.rings[k], jb = b.rings[k + 1];
       lines.push('5 24 ' + f(HEAD.ringPoint(ja, a)) + ' ' + f(HEAD.ringPoint(jb, a)) + ' ' +
         f(HEAD.ringPoint(ja, a - HEAD.FACET_DEG)) + ' ' + f(HEAD.ringPoint(ja, a + HEAD.FACET_DEG)));
+    }
+  }
+  // Ring lines (horizontal borders between rows), like the official parts. A ring gets lines when it lies inside the
+  // printed band or is the very top/bottom edge of the head (rings 0 and 9). Band edges at rings 4/5 adjoin a
+  // neighbouring primitive, which carries its own lines there.
+  var nr = b.rings.length, nf = nFacets;
+  for (var k = 0; k < nr; k++) {
+    var j = b.rings[k];
+    if ((k === 0 || k === nr - 1) && j !== 0 && j !== 9) continue;
+    for (var m = 0; m < nf; m++) {
+      var a0 = first + m * HEAD.FACET_DEG, a1 = a0 + HEAD.FACET_DEG;
+      var ca, cb;
+      if (j === 0) { ca = [5.9288 * Math.sin(a0 * Math.PI / 180), 0, -5.9288 * Math.cos(a0 * Math.PI / 180)]; cb = HEAD.ringPoint(1, a0); }
+      else if (j === 9) { ca = HEAD.ringPoint(8, a0); cb = [6 * Math.sin(a0 * Math.PI / 180), 21, -6 * Math.cos(a0 * Math.PI / 180)]; }
+      else {
+        ca = j === 4 ? (function () { var q = HEAD.ringPoint(4, a0); q[1] = 4 + 1.657; return q; })() : j === 5 ? (function () { var q = HEAD.ringPoint(5, a0); q[1] = 17 - 1.657; return q; })() : HEAD.ringPoint(j - 1, a0);
+        cb = HEAD.ringPoint(j + 1, a0);
+        if (j === 4) { ca = HEAD.ringPoint(3, a0); cb = (function () { var q = HEAD.ringPoint(4, a0); q[1] = 5.657; return q; })(); }
+        if (j === 5) { ca = (function () { var q = HEAD.ringPoint(5, a0); q[1] = 15.343; return q; })(); cb = HEAD.ringPoint(6, a0); }
+      }
+      lines.push('5 24 ' + f(HEAD.ringPoint(j, a0)) + ' ' + f(HEAD.ringPoint(j, a1)) + ' ' + f(ca) + ' ' + f(cb));
     }
   }
   return lines;
